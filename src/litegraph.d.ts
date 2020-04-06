@@ -228,6 +228,8 @@ export const LiteGraph: {
     createNode<T extends LGraphNode = LGraphNode>(type: string): T;
     /** Register a node class so it can be listed when the user wants to create a new one */
     registerNodeType(type: string, base: { new (): LGraphNode }): void;
+    /** removes a node type from the system */
+    unregisterNodeType(type: string): void;
     /**
      * Create a new node type by passing a function, it wraps it with a proper class and generates inputs according to the parameters of the function.
      * Useful to wrap simple methods that do not require properties, and that only process some input to generate an output.
@@ -1017,6 +1019,7 @@ export declare class LGraphCanvas {
     /** Create menu for `Add Node` */
     static onMenuAdd: ContextMenuEventListener;
     static showMenuNodeOptionalInputs: ContextMenuEventListener;
+    static showMenuNodeOptionalOutputs: ContextMenuEventListener;
     static onShowMenuNodeProperties: ContextMenuEventListener;
     static onResizeNode: ContextMenuEventListener;
     static onMenuNodeCollapse: ContextMenuEventListener;

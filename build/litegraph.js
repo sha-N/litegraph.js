@@ -394,7 +394,6 @@
          * @method getNodeTypesCategories
          * @return {Array} array with all the names of the categories
          */
-
         getNodeTypesCategories: function( filter ) {
             var categories = { "": 1 };
             for (var i in this.registered_node_types) {
@@ -474,6 +473,13 @@
             return target;
         },
 
+        /**
+         * Returns if the types of two slots are compatible (taking into account wildcards, etc)
+         * @method isValidConnection
+         * @param {String} type_a
+         * @param {String} type_b
+         * @return {Boolean} true if they can be connected
+         */
         isValidConnection: function(type_a, type_b) {
             if (
                 !type_a || //generic output
@@ -509,13 +515,85 @@
             return false;
         },
 
+        /**
+         * Register a string in the search box so when the user types it it will recommend this node
+         * @method registerSearchboxExtra
+         * @param {String} node_type the node recommended
+         * @param {String} description text to show next to it
+         * @param {Object} data it could contain info of how the node should be configured
+         * @return {Boolean} true if they can be connected
+         */
         registerSearchboxExtra: function(node_type, description, data) {
             this.searchbox_extras[description.toLowerCase()] = {
                 type: node_type,
                 desc: description,
                 data: data
             };
-        }
+        },
+
+        /**
+         * Wrapper to load files (from url using fetch or from file using FileReader)
+         * @method fetchFile
+         * @param {String|File|Blob} url the url of the file (or the file itself)
+         * @param {String} type an string to know how to fetch it: "text","arraybuffer","json","blob"
+         * @param {Function} on_complete callback(data)
+         * @param {Function} on_error in case of an error
+         * @return {FileReader|Promise} returns the object used to 
+         */
+		fetchFile: function( url, type, on_complete, on_error ) {
+			var that = this;
+			if(!url)
+				return null;
+
+			type = type || "text";
+			if( url.constructor === String )
+			{
+				if (url.substr(0, 4) == "http" && LiteGraph.proxy) {
+					url = LiteGraph.proxy + url.substr(url.indexOf(":") + 3);
+				}
+				return fetch(url)
+				.then(function(response) {
+					if(!response.ok)
+						 throw new Error("File not found"); //it will be catch below
+					if(type == "arraybuffer")
+						return response.arrayBuffer();
+					else if(type == "text" || type == "string")
+						return response.text();
+					else if(type == "json")
+						return response.json();
+					else if(type == "blob")
+						return response.blob();
+				})
+				.then(function(data) {
+					if(on_complete)
+						on_complete(data);
+				})
+				.catch(function(error) {
+					console.error("error fetching file:",url);
+					if(on_error)
+						on_error(error);
+				});
+			}
+			else if( url.constructor === File || url.constructor === Blob)
+			{
+				var reader = new FileReader();
+				reader.onload = function(e)
+				{
+					var v = e.target.result;
+					if( type == "json" )
+						v = JSON.parse(v);
+					if(on_complete)
+						on_complete(v);
+				}
+				if(type == "arraybuffer")
+					return reader.readAsArrayBuffer(url);
+				else if(type == "text" || type == "json")
+					return reader.readAsText(url);
+				else if(type == "blob")
+					return reader.readAsBinaryString(url);
+			}
+			return null;
+		}
     });
 
     //timer that works everywhere
@@ -3513,10 +3591,7 @@
 
         //allows nodes to block connection
         if (target_node.onConnectInput) {
-            if (
-                target_node.onConnectInput(target_slot, output.type, output) ===
-                false
-            ) {
+            if ( target_node.onConnectInput(target_slot, output.type, output, this, slot) === false ) {
                 return null;
             }
         }
@@ -4585,14 +4660,12 @@ LGraphNode.prototype.executeAction = function(action)
             return;
         }
 
-        /*
-	if(this.graph)
-		this.graph.canvas = null; //remove old graph link to the canvas
-	this.graph = graph;
-	if(this.graph)
-		this.graph.canvas = this;
-	*/
         graph.attachCanvas(this);
+
+		//remove the graph stack in case a subgraph was open
+		if (this._graph_stack)
+			this._graph_stack = null;
+
         this.setDirty(true, true);
     };
 
@@ -5504,6 +5577,10 @@ LGraphNode.prototype.executeAction = function(action)
                 if (this.resizing_node.size[0] < LiteGraph.NODE_MIN_WIDTH) {
                     this.resizing_node.size[0] = LiteGraph.NODE_MIN_WIDTH;
                 }
+
+		        if (this.resizing_node.onResize) {
+		            this.resizing_node.onResize(this.resizing_node.size);
+				}
 
                 this.canvas.style.cursor = "se-resize";
                 this.dirty_canvas = true;
@@ -8417,7 +8494,10 @@ LGraphNode.prototype.executeAction = function(action)
                             if (values && values.constructor === Function) {
                                 values = w.options.values(w, node);
                             }
-							var values_list = values.constructor === Array ? values : Object.keys(values);
+							var values_list = null;
+							
+							if( w.type != "number")
+								values_list = values.constructor === Array ? values : Object.keys(values);
 
                             var delta = x < 40 ? -1 : x > width - 40 ? 1 : 0;
                             if (w.type == "number") {
@@ -10117,8 +10197,8 @@ LGraphNode.prototype.executeAction = function(action)
 
     //API *************************************************
     //like rect but rounded corners
-    if (this.CanvasRenderingContext2D) {
-        CanvasRenderingContext2D.prototype.roundRect = function(
+    if (typeof(window) != "undefined" && window.CanvasRenderingContext2D) {
+        window.CanvasRenderingContext2D.prototype.roundRect = function(
             x,
             y,
             width,
@@ -10460,11 +10540,13 @@ LGraphNode.prototype.executeAction = function(action)
 
             var body_rect = document.body.getBoundingClientRect();
             var root_rect = root.getBoundingClientRect();
+			if(body_rect.height == 0)
+				console.error("document.body height is 0. That is dangerous, set html,body { height: 100%; }");
 
-            if (left > body_rect.width - root_rect.width - 10) {
+            if (body_rect.width && left > body_rect.width - root_rect.width - 10) {
                 left = body_rect.width - root_rect.width - 10;
             }
-            if (top > body_rect.height - root_rect.height - 10) {
+            if (body_rect.height && top > body_rect.height - root_rect.height - 10) {
                 top = body_rect.height - root_rect.height - 10;
             }
         }
@@ -11177,7 +11259,7 @@ if (typeof exports != "undefined") {
     };
 
     Subgraph.prototype.serialize = function() {
-        var data = LGraphNode.prototype.serialize.call(this);
+        var data = LiteGraph.LGraphNode.prototype.serialize.call(this);
         data.subgraph = this.subgraph.serialize();
         return data;
     };
@@ -11483,6 +11565,15 @@ if (typeof exports != "undefined") {
 
 	ConstantBoolean.prototype.setValue = ConstantNumber.prototype.setValue;
 
+	ConstantBoolean.prototype.onGetInputs = function() {
+		return [["toggle", LiteGraph.ACTION]];
+	};
+
+	ConstantBoolean.prototype.onAction = function(action)
+	{
+		this.setValue( !this.properties.value );
+	}
+
     LiteGraph.registerNodeType("basic/boolean", ConstantBoolean);
 
     function ConstantString() {
@@ -11649,6 +11740,51 @@ if (typeof exports != "undefined") {
 	ConstantData.prototype.setValue = ConstantNumber.prototype.setValue;
 
     LiteGraph.registerNodeType("basic/data", ConstantData);
+
+	//to store json objects
+    function ConstantArray() {
+        this.addInput("", "");
+        this.addOutput("", "array");
+        this.addProperty("value", "");
+        this.widget = this.addWidget("text","array","","value");
+        this.widgets_up = true;
+        this.size = [140, 30];
+        this._value = null;
+    }
+
+    ConstantArray.title = "Const Array";
+    ConstantArray.desc = "Constant Array";
+
+    ConstantArray.prototype.onPropertyChanged = function(name, value) {
+        this.widget.value = value;
+        if (value == null || value == "") {
+            return;
+        }
+
+        try {
+            this._value = JSON.parse(value);
+            this.boxcolor = "#AEA";
+        } catch (err) {
+            this.boxcolor = "red";
+        }
+    };
+
+    ConstantArray.prototype.onExecute = function() {
+        var v = this.getInputData(0);
+		if(v && v.length)
+		{
+			if(!this._value)
+				this._value = new Array();
+			this._value.length = v.length;
+			for(var i = 0; i < v.length; ++i)
+				this._value[i] = v[i];
+		}
+		this.setOutputData(0, this._value);
+    };
+
+	ConstantArray.prototype.setValue = ConstantNumber.prototype.setValue;
+
+    LiteGraph.registerNodeType("basic/array", ConstantArray);
 
     function ArrayElement() {
         this.addInput("array", "array,table,string");
@@ -13708,6 +13844,7 @@ if (typeof exports != "undefined") {
     function MathRange() {
         this.addInput("in", "number", { locked: true });
         this.addOutput("out", "number", { locked: true });
+        this.addOutput("clamped", "number", { locked: true });
 
         this.addProperty("in", 0);
         this.addProperty("in_min", 0);
@@ -13715,7 +13852,7 @@ if (typeof exports != "undefined") {
         this.addProperty("out_min", 0);
         this.addProperty("out_max", 1);
 
-        this.size = [80, 30];
+        this.size = [120, 50];
     }
 
     MathRange.title = "Range";
@@ -13749,10 +13886,22 @@ if (typeof exports != "undefined") {
         var in_max = this.properties.in_max;
         var out_min = this.properties.out_min;
         var out_max = this.properties.out_max;
+		/*
+		if( in_min > in_max )
+		{
+			in_min = in_max;
+			in_max = this.properties.in_min;
+		}
+		if( out_min > out_max )
+		{
+			out_min = out_max;
+			out_max = this.properties.out_min;
+		}
+		*/
 
-        this._last_v =
-            ((v - in_min) / (in_max - in_min)) * (out_max - out_min) + out_min;
+        this._last_v = ((v - in_min) / (in_max - in_min)) * (out_max - out_min) + out_min;
         this.setOutputData(0, this._last_v);
+        this.setOutputData(1, Math.clamp( this._last_v, out_min, out_max ));
     };
 
     MathRange.prototype.onDrawBackground = function(ctx) {
@@ -14845,143 +14994,6 @@ if (typeof exports != "undefined") {
 
     LiteGraph.registerNodeType("math3d/xyzw-to-vec4", Math3DXYZWToVec4);
 
-    //if glMatrix is installed...
-    if (global.glMatrix) {
-        function Math3DQuaternion() {
-            this.addOutput("quat", "quat");
-            this.properties = { x: 0, y: 0, z: 0, w: 1 };
-            this._value = quat.create();
-        }
-
-        Math3DQuaternion.title = "Quaternion";
-        Math3DQuaternion.desc = "quaternion";
-
-        Math3DQuaternion.prototype.onExecute = function() {
-            this._value[0] = this.properties.x;
-            this._value[1] = this.properties.y;
-            this._value[2] = this.properties.z;
-            this._value[3] = this.properties.w;
-            this.setOutputData(0, this._value);
-        };
-
-        LiteGraph.registerNodeType("math3d/quaternion", Math3DQuaternion);
-
-        function Math3DRotation() {
-            this.addInputs([["degrees", "number"], ["axis", "vec3"]]);
-            this.addOutput("quat", "quat");
-            this.properties = { angle: 90.0, axis: vec3.fromValues(0, 1, 0) };
-
-            this._value = quat.create();
-        }
-
-        Math3DRotation.title = "Rotation";
-        Math3DRotation.desc = "quaternion rotation";
-
-        Math3DRotation.prototype.onExecute = function() {
-            var angle = this.getInputData(0);
-            if (angle == null) {
-                angle = this.properties.angle;
-            }
-            var axis = this.getInputData(1);
-            if (axis == null) {
-                axis = this.properties.axis;
-            }
-
-            var R = quat.setAxisAngle(this._value, axis, angle * 0.0174532925);
-            this.setOutputData(0, R);
-        };
-
-        LiteGraph.registerNodeType("math3d/rotation", Math3DRotation);
-
-        //Math3D rotate vec3
-        function Math3DRotateVec3() {
-            this.addInputs([["vec3", "vec3"], ["quat", "quat"]]);
-            this.addOutput("result", "vec3");
-            this.properties = { vec: [0, 0, 1] };
-        }
-
-        Math3DRotateVec3.title = "Rot. Vec3";
-        Math3DRotateVec3.desc = "rotate a point";
-
-        Math3DRotateVec3.prototype.onExecute = function() {
-            var vec = this.getInputData(0);
-            if (vec == null) {
-                vec = this.properties.vec;
-            }
-            var quat = this.getInputData(1);
-            if (quat == null) {
-                this.setOutputData(vec);
-            } else {
-                this.setOutputData(
-                    0,
-                    vec3.transformQuat(vec3.create(), vec, quat)
-                );
-            }
-        };
-
-        LiteGraph.registerNodeType("math3d/rotate_vec3", Math3DRotateVec3);
-
-        function Math3DMultQuat() {
-            this.addInputs([["A", "quat"], ["B", "quat"]]);
-            this.addOutput("A*B", "quat");
-
-            this._value = quat.create();
-        }
-
-        Math3DMultQuat.title = "Mult. Quat";
-        Math3DMultQuat.desc = "rotate quaternion";
-
-        Math3DMultQuat.prototype.onExecute = function() {
-            var A = this.getInputData(0);
-            if (A == null) {
-                return;
-            }
-            var B = this.getInputData(1);
-            if (B == null) {
-                return;
-            }
-
-            var R = quat.multiply(this._value, A, B);
-            this.setOutputData(0, R);
-        };
-
-        LiteGraph.registerNodeType("math3d/mult-quat", Math3DMultQuat);
-
-        function Math3DQuatSlerp() {
-            this.addInputs([
-                ["A", "quat"],
-                ["B", "quat"],
-                ["factor", "number"]
-            ]);
-            this.addOutput("slerp", "quat");
-            this.addProperty("factor", 0.5);
-
-            this._value = quat.create();
-        }
-
-        Math3DQuatSlerp.title = "Quat Slerp";
-        Math3DQuatSlerp.desc = "quaternion spherical interpolation";
-
-        Math3DQuatSlerp.prototype.onExecute = function() {
-            var A = this.getInputData(0);
-            if (A == null) {
-                return;
-            }
-            var B = this.getInputData(1);
-            if (B == null) {
-                return;
-            }
-            var factor = this.properties.factor;
-            if (this.getInputData(2) != null) {
-                factor = this.getInputData(2);
-            }
-
-            var R = quat.slerp(this._value, A, B, factor);
-            this.setOutputData(0, R);
-        };
-
-        LiteGraph.registerNodeType("math3d/quat-slerp", Math3DQuatSlerp);
-    } //glMatrix
 })(this);
 
 (function(global) {
@@ -15449,6 +15461,21 @@ if (typeof exports != "undefined") {
 			var range_max = this.properties.range_max;
 			var target_min = this.properties.target_min;
 			var target_max = this.properties.target_max;
+
+			//swap to avoid errors
+			/*
+			if(range_min > range_max)
+			{
+				range_min = range_max;
+				range_max = this.properties.range_min;
+			}
+
+			if(target_min > target_max)
+			{
+				target_min = target_max;
+				target_max = this.properties.target_min;
+			}
+			*/
 
 			for(var i = 0; i < 3; ++i)
 			{
@@ -19654,8 +19681,8 @@ void main() {\n\
 		};
 		this._uniforms = {
 			u_texture: 0,
-			u_near: 0.1,
-			u_far: 10000
+			u_camera_planes: null, //filled later
+			u_ires: vec2.create()
 		};
 	}
 
@@ -19687,9 +19714,6 @@ void main() {\n\
 		}
 
 		var uniforms = this._uniforms;
-
-		uniforms.u_near = tex.near_far_planes[0];
-		uniforms.u_far = tex.near_far_planes[1];
 		uniforms.u_invert = this.properties.invert ? 1 : 0;
 
 		gl.disable(gl.BLEND);
@@ -19709,6 +19733,8 @@ void main() {\n\
 			planes = [0.1, 1000];
 		} //hardcoded
 		uniforms.u_camera_planes = planes;
+		//uniforms.u_ires.set([1/tex.width, 1/tex.height]);
+		uniforms.u_ires.set([0,0]);
 
 		this._temp_texture.drawTo(function() {
 			tex.bind(0);
@@ -19724,15 +19750,14 @@ void main() {\n\
 		precision highp float;\n\
 		varying vec2 v_coord;\n\
 		uniform sampler2D u_texture;\n\
-		uniform float u_near;\n\
-		uniform float u_far;\n\
+		uniform vec2 u_camera_planes;\n\
 		uniform int u_invert;\n\
+		uniform vec2 u_ires;\n\
 		\n\
 		void main() {\n\
-			float zNear = u_near;\n\
-			float zFar = u_far;\n\
-			float depth = texture2D(u_texture, v_coord).x;\n\
-			depth = depth * 2.0 - 1.0;\n\
+			float zNear = u_camera_planes.x;\n\
+			float zFar = u_camera_planes.y;\n\
+			float depth = texture2D(u_texture, v_coord + u_ires*0.5).x * 2.0 - 1.0;\n\
 			float f = zNear * (depth + 1.0) / (zFar + zNear - depth * (zFar - zNear));\n\
 			if( u_invert == 1 )\n\
 				f = 1.0 - f;\n\
@@ -25347,6 +25372,24 @@ function LGraphGeometryDisplace() {
                             this.properties.value1 = (v | 0) % 255;
                         }
                         break;
+                    case "cmd":
+                        var v = this.getInputData(i);
+                        if (v != null) {
+                            this.properties.cmd = v;
+                        }
+                        break;
+                    case "value1":
+                        var v = this.getInputData(i);
+                        if (v != null) {
+                            this.properties.value1 = Math.clamp(v|0,0,127);
+                        }
+                        break;
+                    case "value2":
+                        var v = this.getInputData(i);
+                        if (v != null) {
+                            this.properties.value2 = Math.clamp(v|0,0,127);
+                        }
+                        break;
                 }
             }
         }
@@ -25415,7 +25458,7 @@ function LGraphGeometryDisplace() {
     };
 
     LGMIDIEvent.prototype.onGetInputs = function() {
-        return [["note", "number"]];
+        return [["cmd", "number"],["note", "number"],["value1", "number"],["value2", "number"]];
     };
 
     LGMIDIEvent.prototype.onGetOutputs = function() {
@@ -25671,6 +25714,119 @@ function LGraphGeometryDisplace() {
     };
 
     LiteGraph.registerNodeType("midi/quantize", LGMIDIQuantize);
+
+	function LGMIDIFromFile() {
+        this.properties = {
+            url: "",
+			autoplay: true
+        };
+
+        this.addInput("play", LiteGraph.ACTION);
+        this.addInput("pause", LiteGraph.ACTION);
+        this.addOutput("note", LiteGraph.EVENT);
+		this._midi = null;
+		this._current_time = 0;
+		this._playing = false;
+
+        if (typeof MidiParser == "undefined") {
+            console.error(
+                "midi-parser.js not included, LGMidiPlay requires that library: https://raw.githubusercontent.com/colxi/midi-parser-js/master/src/main.js"
+            );
+            this.boxcolor = "red";
+		}
+
+	}
+
+    LGMIDIFromFile.title = "MIDI fromFile";
+    LGMIDIFromFile.desc = "Plays a MIDI file";
+    LGMIDIFromFile.color = MIDI_COLOR;
+
+	LGMIDIFromFile.prototype.onAction = function( name )
+	{
+		if(name == "play")
+			this.play();
+		else if(name == "pause")
+			this._playing = !this._playing;
+	}
+
+	LGMIDIFromFile.prototype.onPropertyChanged = function(name,value)
+	{
+		if(name == "url")
+			this.loadMIDIFile(value);
+	}
+
+    LGMIDIFromFile.prototype.onExecute = function() {
+		if(!this._midi)
+			return;
+
+		if(!this._playing)
+			return;
+
+		this._current_time += this.graph.elapsed_time;
+		var current_time = this._current_time * 100;
+
+		for(var i = 0; i < this._midi.tracks; ++i)
+		{
+			var track = this._midi.track[i];
+			if(!track._last_pos)
+			{
+				track._last_pos = 0;
+				track._time = 0;
+			}
+
+			var elem = track.event[ track._last_pos ];
+			if(elem && (track._time + elem.deltaTime) <= current_time )
+			{
+				track._last_pos++;
+				track._time += elem.deltaTime;
+
+				if(elem.data)
+				{
+					var midi_cmd = elem.type << 4 + elem.channel;
+					var midi_event = new MIDIEvent();
+					midi_event.setup([midi_cmd, elem.data[0], elem.data[1]]);
+					this.trigger("note", midi_event);
+				}
+			}
+			
+		}
+    };
+
+	LGMIDIFromFile.prototype.play = function()
+	{
+		this._playing = true;
+		this._current_time = 0;
+		for(var i = 0; i < this._midi.tracks; ++i)
+		{
+			var track = this._midi.track[i];
+			track._last_pos = 0;
+			track._time = 0;
+		}		
+	}
+
+	LGMIDIFromFile.prototype.loadMIDIFile = function(url)
+	{
+		var that = this;
+		LiteGraph.fetchFile( url, "arraybuffer", function(data)
+		{
+			that.boxcolor = "#AFA";
+			that._midi = MidiParser.parse( new Uint8Array(data) );
+			if(that.properties.autoplay)
+				that.play();
+		}, function(err){
+			that.boxcolor = "#FAA";
+			that._midi = null;
+		});
+	}
+
+	LGMIDIFromFile.prototype.onDropFile = function(file)
+	{
+		this.properties.url = "";
+		this.loadMIDIFile( file );
+	}
+
+    LiteGraph.registerNodeType("midi/fromFile", LGMIDIFromFile);
+
 
     function LGMIDIPlay() {
         this.properties = {
@@ -27461,10 +27617,10 @@ LiteGraph.registerNodeType("audio/waveShaper", LGAudioWaveShaper);
         this._ws.onmessage = function(e) {
             that.boxcolor = "#AFA";
             var data = JSON.parse(e.data);
-            if (data.room && data.room != this.properties.room) {
+            if (data.room && data.room != that.properties.room) {
                 return;
             }
-            if (e.data.type == 1) {
+            if (data.type == 1) {
                 if (
                     data.data.object_class &&
                     LiteGraph[data.data.object_class]
@@ -27480,7 +27636,7 @@ LiteGraph.registerNodeType("audio/waveShaper", LGAudioWaveShaper);
                     that.triggerSlot(0, data.data);
                 }
             } else {
-                that._last_received_data[e.data.channel || 0] = data.data;
+                that._last_received_data[data.channel || 0] = data.data;
             }
         };
         this._ws.onerror = function(e) {

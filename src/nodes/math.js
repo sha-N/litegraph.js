@@ -110,6 +110,7 @@
     function MathRange() {
         this.addInput("in", "number", { locked: true });
         this.addOutput("out", "number", { locked: true });
+        this.addOutput("clamped", "number", { locked: true });
 
         this.addProperty("in", 0);
         this.addProperty("in_min", 0);
@@ -117,7 +118,7 @@
         this.addProperty("out_min", 0);
         this.addProperty("out_max", 1);
 
-        this.size = [80, 30];
+        this.size = [120, 50];
     }
 
     MathRange.title = "Range";
@@ -151,10 +152,22 @@
         var in_max = this.properties.in_max;
         var out_min = this.properties.out_min;
         var out_max = this.properties.out_max;
+		/*
+		if( in_min > in_max )
+		{
+			in_min = in_max;
+			in_max = this.properties.in_min;
+		}
+		if( out_min > out_max )
+		{
+			out_min = out_max;
+			out_max = this.properties.out_min;
+		}
+		*/
 
-        this._last_v =
-            ((v - in_min) / (in_max - in_min)) * (out_max - out_min) + out_min;
+        this._last_v = ((v - in_min) / (in_max - in_min)) * (out_max - out_min) + out_min;
         this.setOutputData(0, this._last_v);
+        this.setOutputData(1, Math.clamp( this._last_v, out_min, out_max ));
     };
 
     MathRange.prototype.onDrawBackground = function(ctx) {
@@ -1247,141 +1260,4 @@
 
     LiteGraph.registerNodeType("math3d/xyzw-to-vec4", Math3DXYZWToVec4);
 
-    //if glMatrix is installed...
-    if (global.glMatrix) {
-        function Math3DQuaternion() {
-            this.addOutput("quat", "quat");
-            this.properties = { x: 0, y: 0, z: 0, w: 1 };
-            this._value = quat.create();
-        }
-
-        Math3DQuaternion.title = "Quaternion";
-        Math3DQuaternion.desc = "quaternion";
-
-        Math3DQuaternion.prototype.onExecute = function() {
-            this._value[0] = this.properties.x;
-            this._value[1] = this.properties.y;
-            this._value[2] = this.properties.z;
-            this._value[3] = this.properties.w;
-            this.setOutputData(0, this._value);
-        };
-
-        LiteGraph.registerNodeType("math3d/quaternion", Math3DQuaternion);
-
-        function Math3DRotation() {
-            this.addInputs([["degrees", "number"], ["axis", "vec3"]]);
-            this.addOutput("quat", "quat");
-            this.properties = { angle: 90.0, axis: vec3.fromValues(0, 1, 0) };
-
-            this._value = quat.create();
-        }
-
-        Math3DRotation.title = "Rotation";
-        Math3DRotation.desc = "quaternion rotation";
-
-        Math3DRotation.prototype.onExecute = function() {
-            var angle = this.getInputData(0);
-            if (angle == null) {
-                angle = this.properties.angle;
-            }
-            var axis = this.getInputData(1);
-            if (axis == null) {
-                axis = this.properties.axis;
-            }
-
-            var R = quat.setAxisAngle(this._value, axis, angle * 0.0174532925);
-            this.setOutputData(0, R);
-        };
-
-        LiteGraph.registerNodeType("math3d/rotation", Math3DRotation);
-
-        //Math3D rotate vec3
-        function Math3DRotateVec3() {
-            this.addInputs([["vec3", "vec3"], ["quat", "quat"]]);
-            this.addOutput("result", "vec3");
-            this.properties = { vec: [0, 0, 1] };
-        }
-
-        Math3DRotateVec3.title = "Rot. Vec3";
-        Math3DRotateVec3.desc = "rotate a point";
-
-        Math3DRotateVec3.prototype.onExecute = function() {
-            var vec = this.getInputData(0);
-            if (vec == null) {
-                vec = this.properties.vec;
-            }
-            var quat = this.getInputData(1);
-            if (quat == null) {
-                this.setOutputData(vec);
-            } else {
-                this.setOutputData(
-                    0,
-                    vec3.transformQuat(vec3.create(), vec, quat)
-                );
-            }
-        };
-
-        LiteGraph.registerNodeType("math3d/rotate_vec3", Math3DRotateVec3);
-
-        function Math3DMultQuat() {
-            this.addInputs([["A", "quat"], ["B", "quat"]]);
-            this.addOutput("A*B", "quat");
-
-            this._value = quat.create();
-        }
-
-        Math3DMultQuat.title = "Mult. Quat";
-        Math3DMultQuat.desc = "rotate quaternion";
-
-        Math3DMultQuat.prototype.onExecute = function() {
-            var A = this.getInputData(0);
-            if (A == null) {
-                return;
-            }
-            var B = this.getInputData(1);
-            if (B == null) {
-                return;
-            }
-
-            var R = quat.multiply(this._value, A, B);
-            this.setOutputData(0, R);
-        };
-
-        LiteGraph.registerNodeType("math3d/mult-quat", Math3DMultQuat);
-
-        function Math3DQuatSlerp() {
-            this.addInputs([
-                ["A", "quat"],
-                ["B", "quat"],
-                ["factor", "number"]
-            ]);
-            this.addOutput("slerp", "quat");
-            this.addProperty("factor", 0.5);
-
-            this._value = quat.create();
-        }
-
-        Math3DQuatSlerp.title = "Quat Slerp";
-        Math3DQuatSlerp.desc = "quaternion spherical interpolation";
-
-        Math3DQuatSlerp.prototype.onExecute = function() {
-            var A = this.getInputData(0);
-            if (A == null) {
-                return;
-            }
-            var B = this.getInputData(1);
-            if (B == null) {
-                return;
-            }
-            var factor = this.properties.factor;
-            if (this.getInputData(2) != null) {
-                factor = this.getInputData(2);
-            }
-
-            var R = quat.slerp(this._value, A, B, factor);
-            this.setOutputData(0, R);
-        };
-
-        LiteGraph.registerNodeType("math3d/quat-slerp", Math3DQuatSlerp);
-    } //glMatrix
 })(this);
